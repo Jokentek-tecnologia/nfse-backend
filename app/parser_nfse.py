@@ -1,4 +1,3 @@
-
 import re
 import xml.etree.ElementTree as ET
 import pandas as pd
@@ -31,18 +30,65 @@ def _normalize_disc(raw: str) -> str:
     return txt.strip()
 
 def _extract_last_percent(s: str) -> str:
-    matches = list(re.finditer(r"(\d{1,2}(?:[.,]\d{1,2})?)\s*%", s))
-    if not matches:
+    m = list(re.finditer(r"(\d{1,2}(?:[.,]\d{1,2})?)\s*%", s))
+    if not m:
         return ""
-    g = matches[-1].group(0)
-    g = re.sub(r"\s*%$", "%", g.strip())
-    return g
+    g = m[-1].group(0)
+    return re.sub(r"\s*%$", "%", g.strip())
+
+def _extract_iss_from_disc(raw_disc: str):
+    """
+    A partir do texto de Discriminação (inteiro), extrai APENAS três campos:
+    - Base de Cálculo do ISS/ISSQN  (texto, ex.: 'R$49.262,77')
+    - ISS/ISSQN Retido              (texto, ex.: 'R$2.463,15')
+    - Porcentagem do ISS/ISSQN      (texto, ex.: '5%')
+    Mantém valores exatamente como no texto (com R$ e vírgulas).
+    """
+    if not raw_disc:
+        return ("", "", "")
+
+    disc_txt = _normalize_disc(raw_disc)
+    lines = [ln.strip() for ln in disc_txt.split("\n") if ln.strip()]
+    whole = "\n".join(lines)
+
+    # BASE DE CÁLCULO (ISS/ISSQN) — aceita variações: DE/DO/DA, acentos e ISSQN/ISS QN
+    base_iss = ""
+    m = re.search(
+        r"BASE\s+DE\s*C[ÁA]LCULO\s+(?:DE|DO|DA)\s+(?:ISS(?:\s*QN)?|ISSQN)\b.*?(R\$\s*[0-9\.\s]*,\d{2})",
+        whole, flags=re.IGNORECASE | re.MULTILINE
+    )
+    if m:
+        base_iss = m.group(1).strip()
+
+    # RETENÇÃO (linha que fala de retenção de ISS/ISSQN)
+    ret_line = None
+    # 1) padrão clássico "RETENÇÃO DE ISS/ISSQN"
+    for ln in lines:
+        if re.search(r"RETEN[ÇC][AÃ]O\s+DE?\s+(?:ISS(?:\s*QN)?|ISSQN)\b", ln, flags=re.IGNORECASE):
+            ret_line = ln
+            break
+    # 2) alternativa "ISS/ISSQN RETIDO"
+    if ret_line is None:
+        for ln in lines:
+            if re.search(r"(?:ISS(?:\s*QN)?|ISSQN).{0,40}RETID", ln, flags=re.IGNORECASE):
+                ret_line = ln
+                break
+
+    ret_iss = ""
+    pct_iss = ""
+    if ret_line:
+        # Pega o ÚLTIMO valor monetário da linha (ex.: pode ter base + valor)
+        mv = re.findall(r"(R\$\s*[0-9\.\s]*,\d{2})", ret_line, flags=re.IGNORECASE)
+        if mv:
+            ret_iss = mv[-1].strip()
+        pct_iss = _extract_last_percent(ret_line)
+
+    return (base_iss, ret_iss, pct_iss)
 
 def parse_nfse_text_to_rows(txt: str, include_disc_integral: bool = True) -> list[dict]:
     """
-    Converte o conteúdo de um arquivo TXT/XML de NFSe (Goiânia) em linhas (dicts)
-    com TODAS as colunas do XML + Discriminacao expandida em colunas.
-    Se include_disc_integral=False, a coluna final 'Discriminação' NÃO é incluída.
+    Converte o conteúdo TXT/XML de NFSe (Goiânia) em linhas.
+    >>> MUDANÇA: Discriminação volta como texto integral + SOMENTE 3 colunas ISS/ISSQN extraídas dela.
     """
     wrapped = f"<root>{txt}</root>"
     wrapped = re.sub(r"[^\x09\x0A\x0D\x20-\x7E\u00A0-\uFFFF]", "", wrapped)
@@ -69,9 +115,6 @@ def parse_nfse_text_to_rows(txt: str, include_disc_integral: bool = True) -> lis
         optante_simples = ""
         val_serv = val_ded = val_pis = val_cofins = val_inss = val_ir = val_csll = val_iss = aliq = ""
 
-        tipo_servico = periodo = centro_custo = cno = ""
-        base_calc_inss_text = retencao_inss_text = perc_inss_text = ""
-        base_calc_iss_text = retencao_iss_text = perc_iss_text = ""
         discriminacao_raw = ""
 
         decl = inf.find(".//n:DeclaracaoPrestacaoServico/n:InfDeclaracaoPrestacaoServico", NS)
@@ -96,41 +139,6 @@ def parse_nfse_text_to_rows(txt: str, include_disc_integral: bool = True) -> lis
                 disc_elem = serv.find("n:Discriminacao", NS)
                 discriminacao_raw = disc_elem.text if (disc_elem is not None and disc_elem.text is not None) else ""
 
-                disc_txt = _normalize_disc(discriminacao_raw)
-                lines = [ln.strip() for ln in disc_txt.split("\n") if ln.strip()]
-                whole = "\n".join(lines)
-
-                tipo_servico = lines[0] if lines else ""
-                pm = re.search(r"PER[IÍ]ODO[:\s]+(.+)$", whole, flags=re.IGNORECASE | re.MULTILINE)
-                periodo = pm.group(1).strip() if pm else ""
-                ccm = re.search(r"CENTRO\s+DE\s+CUSTO[:\s]+(.+)$", whole, flags=re.IGNORECASE | re.MULTILINE)
-                centro_custo = ccm.group(1).strip() if ccm else ""
-                cnom = re.search(r"\bCNO[:\s]*([^\s].+)$", whole, flags=re.IGNORECASE | re.MULTILINE)
-                cno = cnom.group(1).strip() if cnom else ""
-
-                m = re.search(r"BASE\s+DE\s*CALCULO\s+DE\s+INSS.*?(R\$\s*[0-9\.\s]*,\d{2})", whole, flags=re.IGNORECASE | re.MULTILINE)
-                base_calc_inss_text = m.group(1).strip() if m else ""
-                m = re.search(r"RETEN[ÇC][AÃ]O\s*DE?\s*INSS.*?(R\$\s*[0-9\.\s]*,\d{2})", whole, flags=re.IGNORECASE | re.MULTILINE)
-                retencao_inss_text = m.group(1).strip() if m else ""
-                for ln in lines:
-                    if re.search(r"RETEN[ÇC][AÃ]O\s*DE?\s*INSS", ln, flags=re.IGNORECASE):
-                        perc_inss_text = _extract_last_percent(ln)
-                        break
-
-                m = re.search(r"BASE\s+DE\s*CALCULO\s+DE\s+ISS.*?(R\$\s*[0-9\.\s]*,\d{2})", whole, flags=re.IGNORECASE | re.MULTILINE)
-                base_calc_iss_text = m.group(1).strip() if m else ""
-                for ln in lines:
-                    if re.search(r"RETEN[ÇC][AÃ]O\s*DE?\s*ISS", ln, flags=re.IGNORECASE):
-                        mv = re.search(r"(R\$\s*[0-9\.\s]*,\d{2})(?!.*R\$)", ln, flags=re.IGNORECASE)
-                        if mv:
-                            retencao_iss_text = mv.group(1).strip()
-                        else:
-                            m2 = re.search(r"(R\$\s*[0-9\.\s]*,\d{2})", ln, flags=re.IGNORECASE)
-                            if m2:
-                                retencao_iss_text = m2.group(1).strip()
-                        perc_iss_text = _extract_last_percent(ln)
-                        break
-
                 cod_municipio = _gettext(serv, "n:CodigoMunicipio")
                 exig_iss = _gettext(serv, "n:ExigibilidadeISS")
                 municipio_incidencia = _gettext(serv, "n:MunicipioIncidencia")
@@ -151,6 +159,10 @@ def parse_nfse_text_to_rows(txt: str, include_disc_integral: bool = True) -> lis
 
             optante_simples = _gettext(decl, "n:OptanteSimplesNacional")
 
+        # >>> NOVO: extrair APENAS os 3 campos ISS/ISSQN da Discriminação
+        base_iss, ret_iss, pct_iss = _extract_iss_from_disc(discriminacao_raw)
+
+        # Monta a linha (ordem preservada): Discriminação integral e, logo depois, as 3 colunas ISS/ISSQN.
         row = {
             "Numero": numero,
             "CodigoVerificacao": verif,
@@ -169,21 +181,20 @@ def parse_nfse_text_to_rows(txt: str, include_disc_integral: bool = True) -> lis
             "IssRetido": iss_retido_flag,
             "CodigoTributacaoMunicipio": cod_trib_mun,
 
-            "Tipo de serviço": tipo_servico,
-            "Período": periodo,
-            "Centro de custo": centro_custo,
-            "CNO": cno,
-            "Base de cálculo do INSS": base_calc_inss_text,
-            "Retenção de INSS": retencao_inss_text,
-            "Retenção de INSS (%)": perc_inss_text,
-            "Base de cálculo de ISS": base_calc_iss_text,
-            "Retenção de ISS": retencao_iss_text,
-            "Retenção de ISS (%)": perc_iss_text,
+            # Aqui volta a Discriminação completa (original)
+            "Discriminação": discriminacao_raw,
 
+            # E imediatamente depois, SOMENTE estas 3 colunas do ISS/ISSQN
+            "Base de cálculo do ISS/ISSQN": base_iss,
+            "ISS/ISSQN Retido": ret_iss,
+            "Percentual do ISS/ISSQN": pct_iss,
+
+            # Demais campos do serviço
             "CodigoMunicipio": cod_municipio,
             "ExigibilidadeISS": exig_iss,
             "MunicipioIncidencia": municipio_incidencia,
 
+            # Prestador / Tomador
             "Prestador_CNPJ": prestador_cnpj,
             "Prestador_IM": prestador_im,
             "Tomador_CNPJ": tomador_cnpj,
@@ -192,21 +203,17 @@ def parse_nfse_text_to_rows(txt: str, include_disc_integral: bool = True) -> lis
             "Tomador_CEP": tomador_cep,
             "Tomador_CodigoMunicipio": tomador_cod_mun,
 
+            # Resumo NFSe
             "OptanteSimplesNacional": optante_simples,
-
             "ValoresNfse_BaseCalculo": base_calc_nfse,
             "ValoresNfse_Aliquota": aliquota_nfse,
             "ValoresNfse_ValorIss": valor_iss_nfse,
         }
-        if include_disc_integral:
-            row["Discriminação"] = discriminacao_raw
 
         rows.append(row)
 
     return rows
 
 def df_for_rows(rows: list[dict], include_disc_integral: bool = True) -> "pd.DataFrame":
-    df = pd.DataFrame(rows)
-    if not include_disc_integral and "Discriminação" in df.columns:
-        df = df.drop(columns=["Discriminação"])
-    return df
+    # Nesta versão a Discriminação sempre está presente; mantemos a assinatura por compatibilidade.
+    return pd.DataFrame(rows)
