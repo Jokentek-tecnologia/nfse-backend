@@ -1,0 +1,163 @@
+<!doctype html>
+<html lang="pt-br">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>NFSe Plataforma — v3</title>
+  <style>
+    body { font-family: system-ui, -apple-system, Segoe UI, Roboto, sans-serif; margin: 40px; background: #fafafa; }
+    .wrap { max-width: 920px; margin: 0 auto; }
+    .card { background: #fff; padding: 24px; border: 1px solid #eee; border-radius: 16px; box-shadow: 0 5px 20px rgba(0,0,0,0.04); }
+    h1 { margin: 0 0 4px; font-size: 22px; }
+    .muted { color: #666; margin: 0 0 20px; }
+    .row { display: grid; gap: 16px; grid-template-columns: 1fr 1fr; }
+    .full { grid-column: 1 / -1; }
+    fieldset { border: 1px solid #eee; border-radius: 12px; padding: 12px; }
+    legend { padding: 0 8px; color: #555; }
+    .drop { border: 2px dashed #bbb; padding: 18px; border-radius: 12px; text-align: center; background: #fcfcff; }
+    .drop.dragover { border-color: #6d28d9; background: #f5f0ff; }
+    label { font-weight: 600; display: block; margin-bottom: 8px; }
+    input[type=file] { width: 100%; }
+    .opt { display: flex; gap: 12px; align-items: center; flex-wrap: wrap; }
+    .opt label { font-weight: 500; }
+    button { margin-top: 8px; padding: 12px 16px; border: 0; border-radius: 10px; background: #6d28d9; color: #fff; font-weight: 600; cursor: pointer; }
+    button[disabled] { opacity: .6; cursor: not-allowed; }
+    table { width: 100%; border-collapse: collapse; font-size: 14px; }
+    th, td { padding: 8px 10px; border-bottom: 1px solid #eee; text-align: left; }
+    .badge { display: inline-block; padding: 2px 8px; border-radius: 999px; background: #eee; font-size: 12px; }
+    .ok { color: #0a7; } .err { color: #d32; }
+  </style>
+</head>
+<body>
+  <div class="wrap">
+    <div class="card">
+      <h1>NFSe → XLSX (Plataforma v3)</h1>
+      <p class="muted">Converta arquivos <strong>TXT/XML</strong> com NFSe (Goiânia) em planilhas Excel. Lote de arquivos, opção de juntar tudo em uma planilha ou gerar um <strong>ZIP com uma planilha por arquivo</strong>. A Discriminação é expandida em colunas e você pode incluir a coluna integral ao final.</p>
+
+      <div class="row">
+        <div>
+          <fieldset>
+            <legend>Arquivo único</legend>
+            <div class="drop" id="drop-single">
+              Arraste 1 arquivo TXT/XML aqui ou selecione:
+              <br/><br/>
+              <input id="file-single" type="file" accept=".txt,.xml" />
+              <div class="opt">
+                <label><input type="checkbox" id="raw-single" checked /> Incluir coluna “Discriminação” integral</label>
+              </div>
+              <button id="btn-single">Converter 1 arquivo</button>
+              <div id="status-single" class="muted"></div>
+            </div>
+          </fieldset>
+        </div>
+
+        <div>
+          <fieldset>
+            <legend>Lote (vários arquivos)</legend>
+            <div class="drop" id="drop-multi">
+              Arraste vários arquivos TXT/XML ou selecione:
+              <br/><br/>
+              <input id="file-multi" type="file" accept=".txt,.xml" multiple />
+              <div class="opt">
+                <label><input type="radio" name="out" value="combined" checked /> Uma planilha única</label>
+                <label><input type="radio" name="out" value="zip" /> ZIP com uma planilha por arquivo</label>
+                <label><input type="checkbox" id="raw-multi" checked /> Incluir coluna “Discriminação” integral</label>
+              </div>
+              <button id="btn-multi">Converter lote</button>
+              <div id="status-multi" class="muted"></div>
+            </div>
+          </fieldset>
+        </div>
+
+        <div class="full">
+          <fieldset>
+            <legend>Processamento (lote)</legend>
+            <table>
+              <thead><tr><th>Arquivo</th><th>Status</th></tr></thead>
+              <tbody id="jobs"></tbody>
+            </table>
+          </fieldset>
+        </div>
+      </div>
+    </div>
+  </div>
+
+  <script>
+    async function downloadBlob(blob, filename) {
+      const url = URL.createObjectURL(blob);
+      const a = document.createElement("a");
+      a.href = url; a.download = filename || "NFSe.xlsx";
+      document.body.appendChild(a); a.click(); a.remove();
+      URL.revokeObjectURL(url);
+    }
+
+    function dragger(el, input) {
+      el.addEventListener("dragover", e => { e.preventDefault(); el.classList.add("dragover"); });
+      el.addEventListener("dragleave", () => el.classList.remove("dragover"));
+      el.addEventListener("drop", e => {
+        e.preventDefault(); el.classList.remove("dragover");
+        if (e.dataTransfer.files && e.dataTransfer.files.length) {
+          input.files = e.dataTransfer.files;
+        }
+      });
+    }
+
+    const fileSingle = document.getElementById("file-single");
+    const rawSingle = document.getElementById("raw-single");
+    const btnSingle = document.getElementById("btn-single");
+    const statusSingle = document.getElementById("status-single");
+    dragger(document.getElementById("drop-single"), fileSingle);
+
+    btnSingle.addEventListener("click", async () => {
+      if (!fileSingle.files.length) { statusSingle.textContent = "Selecione 1 arquivo."; return; }
+      statusSingle.textContent = "Processando…";
+      btnSingle.disabled = true;
+      try {
+        const fd = new FormData();
+        fd.append("file", fileSingle.files[0]);
+        const url = `/upload?include_raw_disc=${rawSingle.checked ? "true" : "false"}`;
+        const res = await fetch(url, { method: "POST", body: fd });
+        if (!res.ok) throw new Error("Falha no processamento");
+        const blob = await res.blob();
+        await downloadBlob(blob, "NFSe_Completa.xlsx");
+        statusSingle.textContent = "Arquivo gerado com sucesso!";
+      } catch (err) {
+        statusSingle.textContent = "Erro: " + err.message;
+      } finally {
+        btnSingle.disabled = false;
+      }
+    });
+
+    const fileMulti = document.getElementById("file-multi");
+    const rawMulti = document.getElementById("raw-multi");
+    const btnMulti = document.getElementById("btn-multi");
+    const statusMulti = document.getElementById("status-multi");
+    const jobs = document.getElementById("jobs");
+    dragger(document.getElementById("drop-multi"), fileMulti);
+
+    btnMulti.addEventListener("click", async () => {
+      if (!fileMulti.files.length) { statusMulti.textContent = "Selecione arquivos."; return; }
+      const out = Array.from(document.querySelectorAll('input[name="out"]')).find(r => r.checked).value;
+      statusMulti.textContent = "Processando…";
+      btnMulti.disabled = true;
+      jobs.innerHTML = Array.from(fileMulti.files).map(f => `<tr><td>${f.name}</td><td class="badge">pendente</td></tr>`).join("");
+
+      try {
+        const fd = new FormData();
+        for (const f of fileMulti.files) fd.append("files", f);
+        const url = `/upload-multi?out=${out}&include_raw_disc=${rawMulti.checked ? "true" : "false"}`;
+        const res = await fetch(url, { method: "POST", body: fd });
+        if (!res.ok) throw new Error("Falha no processamento do lote");
+        const blob = await res.blob();
+        await downloadBlob(blob, out === "combined" ? "NFSe_Completa_Lote.xlsx" : "NFSe_Planilhas.zip");
+        statusMulti.textContent = "Lote processado com sucesso!";
+        jobs.querySelectorAll("td:last-child").forEach(td => td.textContent = "OK");
+      } catch (err) {
+        statusMulti.textContent = "Erro: " + err.message;
+      } finally {
+        btnMulti.disabled = false;
+      }
+    });
+  </script>
+</body>
+</html>
