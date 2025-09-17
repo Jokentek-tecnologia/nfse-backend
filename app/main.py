@@ -13,9 +13,10 @@ app = FastAPI(title="NFSe Plataforma — v3")
 
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["*"],  # ajuste para seu domínio Netlify na produção
+    allow_origins=["https://vertex-convert.netlify.app"],  # <— seu domínio Netlify, sem barra no final
     allow_methods=["POST", "GET", "OPTIONS"],
     allow_headers=["*"],
+    allow_credentials=False,
 )
 
 templates = Jinja2Templates(directory="app/templates")
